@@ -1,4 +1,4 @@
-// Audio processing utilities using Web Audio API
+import { AudioWorkletNode, IBaseAudioContext, IConstantSourceNode, IBiquadFilterNode, IGainNode, IConvolverNode, IAudioDestinationNode, IMediaElementAudioSourceNode, IAudioContext } from 'standardized-audio-context';
 
 export interface AudioEffects {
   character: "normal" | "chipmunk" | "robot" | "deep"
@@ -16,26 +16,6 @@ export const defaultEffects: AudioEffects = {
   bass: 0,
   reverb: 0,
   speed: 1.0,
-}
-
-// Create a simple impulse response for reverb
-export const createReverbImpulseResponse = (audioContext: AudioContext, duration = 2, decay = 2): AudioBuffer => {
-  const sampleRate = audioContext.sampleRate
-  const length = sampleRate * duration
-  const impulse = audioContext.createBuffer(2, length, sampleRate)
-  const leftChannel = impulse.getChannelData(0)
-  const rightChannel = impulse.getChannelData(1)
-
-  for (let i = 0; i < length; i++) {
-    const n = i / length
-    // Decay exponentially
-    const amplitude = Math.pow(1 - n, decay)
-    // Random noise
-    leftChannel[i] = (Math.random() * 2 - 1) * amplitude
-    rightChannel[i] = (Math.random() * 2 - 1) * amplitude
-  }
-
-  return impulse
 }
 
 // Apply character presets
@@ -80,150 +60,97 @@ export const applyCharacterPreset = (
   return newEffects
 }
 
-// Create pitch shift worklet processor
-export const createPitchShiftProcessor = async (audioContext: AudioContext): Promise<void> => {
-  // Only register once
-  if (!audioContext.audioWorklet) {
-    console.error("AudioWorklet not supported in this browser")
-    return
+// Create a simple impulse response for reverb
+export const createReverbImpulseResponse = (audioContext: IBaseAudioContext<IAudioContext>, duration = 2, decay = 2): AudioBuffer => {
+  const sampleRate = audioContext.sampleRate
+  const length = sampleRate * duration
+  const impulse = audioContext.createBuffer(2, length, sampleRate)
+  const leftChannel = impulse.getChannelData(0)
+  const rightChannel = impulse.getChannelData(1)
+
+  for (let i = 0; i < length; i++) {
+    const n = i / length
+    // Decay exponentially
+    const amplitude = Math.pow(1 - n, decay)
+    // Random noise
+    leftChannel[i] = (Math.random() * 2 - 1) * amplitude
+    rightChannel[i] = (Math.random() * 2 - 1) * amplitude
   }
 
-  try {
-    // Check if already registered
-    await audioContext.audioWorklet.addModule(
-      URL.createObjectURL(
-        new Blob(
-          [
-            `
-            class PitchShifterProcessor extends AudioWorkletProcessor {
-              constructor() {
-                super();
-                this.pitchRatio = 1.0;
-                this.grainSize = 512;
-                this.overlapRatio = 0.5;
-                
-                this.inputBuffer = new Float32Array(this.grainSize * 2);
-                this.outputBuffer = new Float32Array(this.grainSize * 2);
-                
-                this.inputBufferFill = 0;
-                this.outputBufferFill = 0;
-                
-                this.port.onmessage = (event) => {
-                  if (event.data.pitchRatio !== undefined) {
-                    this.pitchRatio = event.data.pitchRatio;
-                  }
-                };
-              }
-              
-              process(inputs, outputs, parameters) {
-                const input = inputs[0];
-                const output = outputs[0];
-                
-                if (!input || !input[0] || !output || !output[0]) {
-                  return true;
-                }
-                
-                const inputChannel = input[0];
-                const outputChannel = output[0];
-                
-                // Simple time-domain pitch shifting
-                // This is a basic implementation - a real one would use FFT
-                const stretchFactor = 1.0 / this.pitchRatio;
-                
-                for (let i = 0; i < inputChannel.length; i++) {
-                  // Simple resampling for pitch shift
-                  const readPos = i * stretchFactor;
-                  const readPosFloor = Math.floor(readPos);
-                  const readPosFrac = readPos - readPosFloor;
-                  
-                  if (readPosFloor >= 0 && readPosFloor < inputChannel.length - 1) {
-                    // Linear interpolation
-                    outputChannel[i] = inputChannel[readPosFloor] * (1 - readPosFrac) + 
-                                      inputChannel[readPosFloor + 1] * readPosFrac;
-                  } else if (readPosFloor >= 0 && readPosFloor < inputChannel.length) {
-                    outputChannel[i] = inputChannel[readPosFloor];
-                  } else {
-                    outputChannel[i] = 0;
-                  }
-                }
-                
-                return true;
-              }
-            }
-            
-            registerProcessor('pitch-shifter-processor', PitchShifterProcessor);
-            `,
-          ],
-          { type: "application/javascript" },
-        ),
-      ),
-    )
-    console.log("PitchShifter processor registered successfully")
-  } catch (error) {
-    console.error("Failed to register PitchShifter processor:", error)
-  }
+  return impulse
 }
 
 // Audio processing nodes interface
 export interface AudioNodes {
-  sourceNode: MediaElementAudioSourceNode
-  pitchNode: AudioWorkletNode | null
-  bassFilter: BiquadFilterNode
-  trebleFilter: BiquadFilterNode
-  convolverNode: ConvolverNode
-  dryGain: GainNode
-  wetGain: GainNode
-  outputGain: GainNode
+  sourceNode: IMediaElementAudioSourceNode<IAudioContext>
+  pitchNode: AudioWorkletNode<any> | null
+  bassFilter: IBiquadFilterNode<IAudioContext>
+  trebleFilter: IBiquadFilterNode<IAudioContext>
+  convolverNode: IConvolverNode<IAudioContext>
+  dryGain: IGainNode<IAudioContext>
+  wetGain: IGainNode<IAudioContext>
+  outputGain: IGainNode<IAudioContext>
 }
 
 // Setup audio processing graph with all effects
 export const setupAudioGraph = async (
-  audioContext: AudioContext,
+  audioContext: IAudioContext,
   audioElement: HTMLAudioElement,
   effects: AudioEffects,
 ): Promise<AudioNodes> => {
-  // Register pitch shifter worklet if needed
-  await createPitchShiftProcessor(audioContext)
-
   // Create source node
-  const sourceNode = audioContext.createMediaElementSource(audioElement)
+  const sourceNode = audioContext.createMediaElementSource(audioElement) as IMediaElementAudioSourceNode<IAudioContext>;
 
   // Create pitch shifter node if supported
-  let pitchNode: AudioWorkletNode | null = null
+  let pitchNode: AudioWorkletNode<any> | null = null
   try {
-    pitchNode = new AudioWorkletNode(audioContext, "pitch-shifter-processor")
-    // Set initial pitch
-    const pitchRatio = Math.pow(2, effects.pitch / 12) // Convert semitones to ratio
-    pitchNode.port.postMessage({ pitchRatio })
+    // Load the processor code
+    if (AudioWorkletNode && audioContext.audioWorklet) {
+      // Check if the processor is already registered
+      try {
+        // Try to create the node first - if it fails, we need to register the processor
+        pitchNode = new AudioWorkletNode(audioContext as any, "pitch-shifter-processor");
+      } catch (e) {
+        // Processor not registered yet, load it
+        await audioContext.audioWorklet.addModule('/worklets/pitch-shifter-processor.js');
+        
+        // Now create the node
+        pitchNode = new AudioWorkletNode(audioContext as any, "pitch-shifter-processor");
+      }
+      
+      // Set initial pitch
+      const pitchRatio = Math.pow(2, effects.pitch / 12) // Convert semitones to ratio
+      pitchNode.port.postMessage({ pitchRatio })
+    }
   } catch (error) {
     console.warn("Pitch shifter not available, falling back to playbackRate:", error)
     pitchNode = null
   }
 
   // Create filters
-  const bassFilter = audioContext.createBiquadFilter()
+  const bassFilter = audioContext.createBiquadFilter() as IBiquadFilterNode<IAudioContext>;
   bassFilter.type = "lowshelf"
   bassFilter.frequency.value = 200
   bassFilter.gain.value = effects.bass
 
-  const trebleFilter = audioContext.createBiquadFilter()
+  const trebleFilter = audioContext.createBiquadFilter() as IBiquadFilterNode<IAudioContext>;
   trebleFilter.type = "highshelf"
   trebleFilter.frequency.value = 3000
   trebleFilter.gain.value = effects.treble
 
   // Create reverb (convolver)
-  const convolverNode = audioContext.createConvolver()
+  const convolverNode = audioContext.createConvolver() as IConvolverNode<IAudioContext>;
   convolverNode.buffer = createReverbImpulseResponse(audioContext)
 
   // Create gain nodes for wet/dry mix
-  const wetGain = audioContext.createGain()
+  const wetGain = audioContext.createGain() as IGainNode<IAudioContext>;
   wetGain.gain.value = effects.reverb
 
-  const dryGain = audioContext.createGain()
+  const dryGain = audioContext.createGain() as IGainNode<IAudioContext>;
   dryGain.gain.value = 1 - effects.reverb
 
   // Create output gain
-  const outputGain = audioContext.createGain()
+  const outputGain = audioContext.createGain() as IGainNode<IAudioContext>;
   outputGain.gain.value = 1.0
 
   // Connect the nodes
@@ -288,4 +215,3 @@ export const updateAudioEffects = (audioElement: HTMLAudioElement, nodes: AudioN
     console.log("Using fallback pitch adjustment via playbackRate")
   }
 }
-

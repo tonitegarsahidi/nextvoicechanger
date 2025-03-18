@@ -234,110 +234,21 @@ export const createGranularProcessor = async (audioContext: AudioContext): Promi
   }
 
   try {
-    // Register the granular processor
-    await audioContext.audioWorklet.addModule(
-      URL.createObjectURL(
-        new Blob(
-          [
-            `
-            class GranularProcessor extends AudioWorkletProcessor {
-              constructor() {
-                super();
-                this.grainSize = 4096; // Default grain size
-                this.scatter = 0.2;
-                this.density = 0.8;
-                this.buffer = new Float32Array(32768); // Buffer for grains
-                this.bufferFill = 0;
-                this.grains = [];
-                this.sampleRate = 44100;
-                
-                this.port.onmessage = (event) => {
-                  if (event.data.grainSize !== undefined) {
-                    this.grainSize = Math.floor(event.data.grainSize * this.sampleRate);
-                  }
-                  if (event.data.scatter !== undefined) {
-                    this.scatter = event.data.scatter;
-                  }
-                  if (event.data.density !== undefined) {
-                    this.density = event.data.density;
-                  }
-                };
-              }
-              
-              process(inputs, outputs, parameters) {
-                const input = inputs[0];
-                const output = outputs[0];
-                
-                if (!input || !input[0] || !output || !output[0]) {
-                  return true;
-                }
-                
-                const inputChannel = input[0];
-                const outputChannel = output[0];
-                
-                // Add input to buffer
-                for (let i = 0; i < inputChannel.length; i++) {
-                  this.buffer[this.bufferFill] = inputChannel[i];
-                  this.bufferFill = (this.bufferFill + 1) % this.buffer.length;
-                }
-                
-                // Clear output
-                for (let i = 0; i < outputChannel.length; i++) {
-                  outputChannel[i] = 0;
-                }
-                
-                // Create new grains based on density
-                if (Math.random() < this.density * 0.1) {
-                  const startPos = Math.floor(Math.random() * (this.buffer.length - this.grainSize));
-                  const endPos = startPos + this.grainSize;
-                  const offset = Math.floor(Math.random() * this.scatter * this.sampleRate);
-                  
-                  this.grains.push({
-                    start: startPos,
-                    end: endPos,
-                    pos: 0,
-                    offset: offset
-                  });
-                }
-                
-                // Process active grains
-                for (let i = 0; i < this.grains.length; i++) {
-                  const grain = this.grains[i];
-                  
-                  for (let j = 0; j < outputChannel.length; j++) {
-                    if (grain.pos < this.grainSize) {
-                      // Apply envelope (simple triangle)
-                      const envelope = 1 - Math.abs(2 * grain.pos / this.grainSize - 1);
-                      const bufferPos = (grain.start + grain.pos) % this.buffer.length;
-                      
-                      // Add grain sample to output
-                      outputChannel[(j + grain.offset) % outputChannel.length] += 
-                        this.buffer[bufferPos] * envelope * 0.5;
-                      
-                      grain.pos++;
-                    }
-                  }
-                }
-                
-                // Remove completed grains
-                this.grains = this.grains.filter(grain => grain.pos < this.grainSize);
-                
-                return true;
-              }
-            }
-            
-            registerProcessor('granular-processor', GranularProcessor);
-            `,
-          ],
-          { type: "application/javascript" },
-        ),
-      ),
-    )
-    console.log("Granular processor registered successfully")
-    return true
+    // Check if the processor is already registered
+    try {
+      // Try to create the node first - if it fails, we need to register the processor
+      new AudioWorkletNode(audioContext, "granular-processor");
+      console.log("Granular processor already registered");
+      return true;
+    } catch (e) {
+      // Processor not registered yet, load it from the public folder
+      await audioContext.audioWorklet.addModule('/worklets/granular-processor.js');
+      console.log("Granular processor registered successfully");
+      return true;
+    }
   } catch (error) {
-    console.error("Failed to register granular processor:", error)
-    return false
+    console.error("Failed to register granular processor:", error);
+    return false;
   }
 }
 
@@ -349,159 +260,21 @@ export const createAutoTuneProcessor = async (audioContext: AudioContext): Promi
   }
 
   try {
-    // Register the auto-tune processor
-    await audioContext.audioWorklet.addModule(
-      URL.createObjectURL(
-        new Blob(
-          [
-            `
-            class AutoTuneProcessor extends AudioWorkletProcessor {
-              constructor() {
-                super();
-                // Define musical scales (semitone offsets from root)
-                this.scales = {
-                  chromatic: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-                  major: [0, 2, 4, 5, 7, 9, 11],
-                  minor: [0, 2, 3, 5, 7, 8, 10]
-                };
-                
-                this.currentScale = this.scales.major;
-                this.amount = 0.5; // 0 to 1 (subtle to strong)
-                this.rootNote = 0; // C
-                
-                // For pitch detection
-                this.bufferSize = 2048;
-                this.buffer = new Float32Array(this.bufferSize);
-                this.bufferIndex = 0;
-                
-                // For pitch correction
-                this.currentPitch = 0;
-                this.targetPitch = 0;
-                
-                this.port.onmessage = (event) => {
-                  if (event.data.scale) {
-                    this.currentScale = this.scales[event.data.scale] || this.scales.major;
-                  }
-                  if (event.data.amount !== undefined) {
-                    this.amount = Math.max(0, Math.min(1, event.data.amount));
-                  }
-                };
-              }
-              
-              // Simple pitch detection using zero-crossing
-              detectPitch(buffer) {
-                let crossings = 0;
-                let prevSample = 0;
-                
-                for (let i = 0; i < buffer.length; i++) {
-                  if ((prevSample < 0 && buffer[i] >= 0) || 
-                      (prevSample >= 0 && buffer[i] < 0)) {
-                    crossings++;
-                  }
-                  prevSample = buffer[i];
-                }
-                
-                // Calculate frequency from zero-crossings
-                const secondsPerBuffer = buffer.length / sampleRate;
-                return crossings / (2 * secondsPerBuffer);
-              }
-              
-              // Find closest note in scale
-              findClosestNote(frequency) {
-                // Convert frequency to MIDI note number
-                const noteNumber = 12 * (Math.log2(frequency / 440) + 4.75);
-                
-                // Get the semitone offset from C
-                const semitone = Math.round(noteNumber) % 12;
-                
-                // Find closest note in scale
-                let closestNote = this.currentScale[0];
-                let minDistance = 12;
-                
-                for (const note of this.currentScale) {
-                  const distance = Math.abs(semitone - note);
-                  if (distance < minDistance) {
-                    minDistance = distance;
-                    closestNote = note;
-                  }
-                }
-                
-                // Calculate target frequency
-                const octave = Math.floor(noteNumber / 12);
-                const targetNoteNumber = octave * 12 + closestNote;
-                return 440 * Math.pow(2, (targetNoteNumber - 69) / 12);
-              }
-              
-              process(inputs, outputs, parameters) {
-                const input = inputs[0];
-                const output = outputs[0];
-                
-                if (!input || !input[0] || !output || !output[0]) {
-                  return true;
-                }
-                
-                const inputChannel = input[0];
-                const outputChannel = output[0];
-                
-                // Fill buffer for pitch detection
-                for (let i = 0; i < inputChannel.length; i++) {
-                  this.buffer[this.bufferIndex] = inputChannel[i];
-                  this.bufferIndex = (this.bufferIndex + 1) % this.bufferSize;
-                  
-                  // When buffer is full, detect pitch
-                  if (this.bufferIndex === 0) {
-                    const detectedFreq = this.detectPitch(this.buffer);
-                    if (detectedFreq > 50 && detectedFreq < 2000) { // Valid vocal range
-                      this.currentPitch = detectedFreq;
-                      this.targetPitch = this.findClosestNote(detectedFreq);
-                    }
-                  }
-                }
-                
-                // Simple time-domain pitch shifting
-                if (this.currentPitch > 0 && this.targetPitch > 0) {
-                  const ratio = this.targetPitch / this.currentPitch;
-                  const blendedRatio = 1 + (ratio - 1) * this.amount;
-                  
-                  for (let i = 0; i < outputChannel.length; i++) {
-                    // Simple resampling for pitch correction
-                    const readPos = i / blendedRatio;
-                    const readPosFloor = Math.floor(readPos);
-                    const readPosFrac = readPos - readPosFloor;
-                    
-                    if (readPosFloor >= 0 && readPosFloor < inputChannel.length - 1) {
-                      // Linear interpolation
-                      outputChannel[i] = inputChannel[readPosFloor] * (1 - readPosFrac) + 
-                                        inputChannel[readPosFloor + 1] * readPosFrac;
-                    } else if (readPosFloor >= 0 && readPosFloor < inputChannel.length) {
-                      outputChannel[i] = inputChannel[readPosFloor];
-                    } else {
-                      outputChannel[i] = 0;
-                    }
-                  }
-                } else {
-                  // Pass through if no pitch detected
-                  for (let i = 0; i < outputChannel.length; i++) {
-                    outputChannel[i] = inputChannel[i];
-                  }
-                }
-                
-                return true;
-              }
-            }
-            
-            registerProcessor('auto-tune-processor', AutoTuneProcessor);
-            `,
-          ],
-          { type: "application/javascript" },
-        ),
-      ),
-    )
-    console.log("Auto-tune processor registered successfully")
-    return true
+    // Check if the processor is already registered
+    try {
+      // Try to create the node first - if it fails, we need to register the processor
+      new AudioWorkletNode(audioContext, "auto-tune-processor");
+      console.log("Auto-tune processor already registered");
+      return true;
+    } catch (e) {
+      // Processor not registered yet, load it from the public folder
+      await audioContext.audioWorklet.addModule('/worklets/auto-tune-processor.js');
+      console.log("Auto-tune processor registered successfully");
+      return true;
+    }
   } catch (error) {
-    console.error("Failed to register auto-tune processor:", error)
-    return false
+    console.error("Failed to register auto-tune processor:", error);
+    return false;
   }
 }
 
@@ -513,99 +286,21 @@ export const createFormantShiftProcessor = async (audioContext: AudioContext): P
   }
 
   try {
-    // Register the formant shift processor
-    await audioContext.audioWorklet.addModule(
-      URL.createObjectURL(
-        new Blob(
-          [
-            `
-            class FormantShiftProcessor extends AudioWorkletProcessor {
-              constructor() {
-                super();
-                this.shift = 0; // -2 to 2
-                
-                // Formant filter banks
-                this.formantFilters = [
-                  { frequency: 500, Q: 10, gain: 1 },   // First formant
-                  { frequency: 1500, Q: 8, gain: 0.7 }, // Second formant
-                  { frequency: 2500, Q: 6, gain: 0.4 }  // Third formant
-                ];
-                
-                // Buffer for processing
-                this.bufferSize = 2048;
-                this.inputBuffer = new Float32Array(this.bufferSize);
-                this.outputBuffer = new Float32Array(this.bufferSize);
-                this.bufferFill = 0;
-                
-                this.port.onmessage = (event) => {
-                  if (event.data.shift !== undefined) {
-                    this.shift = Math.max(-2, Math.min(2, event.data.shift));
-                    
-                    // Update formant frequencies based on shift
-                    this.formantFilters[0].frequency = 500 * Math.pow(1.5, this.shift);
-                    this.formantFilters[1].frequency = 1500 * Math.pow(1.5, this.shift);
-                    this.formantFilters[2].frequency = 2500 * Math.pow(1.5, this.shift);
-                  }
-                };
-              }
-              
-              // Simple biquad filter implementation
-              applyFilter(sample, filter) {
-                const w0 = 2 * Math.PI * filter.frequency / sampleRate;
-                const alpha = Math.sin(w0) / (2 * filter.Q);
-                
-                const b0 = (1 + alpha) * filter.gain;
-                const b1 = -2 * Math.cos(w0) * filter.gain;
-                const b2 = (1 - alpha) * filter.gain;
-                const a0 = 1 + alpha;
-                const a1 = -2 * Math.cos(w0);
-                const a2 = 1 - alpha;
-                
-                // Apply filter (simplified)
-                return (b0/a0) * sample;
-              }
-              
-              process(inputs, outputs, parameters) {
-                const input = inputs[0];
-                const output = outputs[0];
-                
-                if (!input || !input[0] || !output || !output[0]) {
-                  return true;
-                }
-                
-                const inputChannel = input[0];
-                const outputChannel = output[0];
-                
-                // Process each sample
-                for (let i = 0; i < inputChannel.length; i++) {
-                  let sample = inputChannel[i];
-                  
-                  // Apply formant filters
-                  let filteredSample = 0;
-                  for (const filter of this.formantFilters) {
-                    filteredSample += this.applyFilter(sample, filter);
-                  }
-                  
-                  // Mix original and filtered signal
-                  outputChannel[i] = sample * 0.3 + filteredSample * 0.7;
-                }
-                
-                return true;
-              }
-            }
-            
-            registerProcessor('formant-shift-processor', FormantShiftProcessor);
-            `,
-          ],
-          { type: "application/javascript" },
-        ),
-      ),
-    )
-    console.log("Formant shift processor registered successfully")
-    return true
+    // Check if the processor is already registered
+    try {
+      // Try to create the node first - if it fails, we need to register the processor
+      new AudioWorkletNode(audioContext, "formant-shift-processor");
+      console.log("Formant shift processor already registered");
+      return true;
+    } catch (e) {
+      // Processor not registered yet, load it from the public folder
+      await audioContext.audioWorklet.addModule('/worklets/formant-shift-processor.js');
+      console.log("Formant shift processor registered successfully");
+      return true;
+    }
   } catch (error) {
-    console.error("Failed to register formant shift processor:", error)
-    return false
+    console.error("Failed to register formant shift processor:", error);
+    return false;
   }
 }
 
@@ -617,84 +312,21 @@ export const createTimeStretchProcessor = async (audioContext: AudioContext): Pr
   }
 
   try {
-    // Register the time stretch processor
-    await audioContext.audioWorklet.addModule(
-      URL.createObjectURL(
-        new Blob(
-          [
-            `
-            class TimeStretchProcessor extends AudioWorkletProcessor {
-              constructor() {
-                super();
-                this.rate = 1.0; // 0.5 to 2.0
-                this.windowSize = 1024;
-                this.buffer = new Float32Array(this.windowSize * 2);
-                this.bufferFill = 0;
-                this.readPosition = 0;
-                
-                this.port.onmessage = (event) => {
-                  if (event.data.rate !== undefined) {
-                    this.rate = Math.max(0.5, Math.min(2.0, event.data.rate));
-                  }
-                };
-              }
-              
-              process(inputs, outputs, parameters) {
-                const input = inputs[0];
-                const output = outputs[0];
-                
-                if (!input || !input[0] || !output || !output[0]) {
-                  return true;
-                }
-                
-                const inputChannel = input[0];
-                const outputChannel = output[0];
-                
-                // Add input to buffer
-                for (let i = 0; i < inputChannel.length; i++) {
-                  this.buffer[this.bufferFill] = inputChannel[i];
-                  this.bufferFill = (this.bufferFill + 1) % this.buffer.length;
-                }
-                
-                // Read from buffer at time-stretched rate
-                for (let i = 0; i < outputChannel.length; i++) {
-                  // Calculate read position
-                  const readPos = this.readPosition;
-                  const readPosInt = Math.floor(readPos);
-                  const readPosFrac = readPos - readPosInt;
-                  
-                  // Linear interpolation
-                  const pos1 = readPosInt % this.buffer.length;
-                  const pos2 = (readPosInt + 1) % this.buffer.length;
-                  
-                  outputChannel[i] = this.buffer[pos1] * (1 - readPosFrac) + 
-                                    this.buffer[pos2] * readPosFrac;
-                  
-                  // Advance read position at specified rate
-                  this.readPosition += this.rate;
-                  
-                  // Wrap read position
-                  if (this.readPosition >= this.buffer.length) {
-                    this.readPosition -= this.buffer.length;
-                  }
-                }
-                
-                return true;
-              }
-            }
-            
-            registerProcessor('time-stretch-processor', TimeStretchProcessor);
-            `,
-          ],
-          { type: "application/javascript" },
-        ),
-      ),
-    )
-    console.log("Time stretch processor registered successfully")
-    return true
+    // Check if the processor is already registered
+    try {
+      // Try to create the node first - if it fails, we need to register the processor
+      new AudioWorkletNode(audioContext, "time-stretch-processor");
+      console.log("Time stretch processor already registered");
+      return true;
+    } catch (e) {
+      // Processor not registered yet, load it from the public folder
+      await audioContext.audioWorklet.addModule('/worklets/time-stretch-processor.js');
+      console.log("Time stretch processor registered successfully");
+      return true;
+    }
   } catch (error) {
-    console.error("Failed to register time stretch processor:", error)
-    return false
+    console.error("Failed to register time stretch processor:", error);
+    return false;
   }
 }
 
