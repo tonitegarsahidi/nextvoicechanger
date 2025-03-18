@@ -44,47 +44,67 @@ export default function AudioPlayer({ audio }: AudioPlayerProps) {
   const advancedNodesRef = useRef<AdvancedAudioNodes | null>(null)
   const audioUrlRef = useRef<string | null>(null)
   const effectsAppliedRef = useRef(false)
+  const sourceNodeCreatedRef = useRef(false) // Track if we've already created a source node
 
   // Initialize or reinitialize audio context and processing graph
   const initAudioContext = async () => {
     // Clean up existing context if any
     if (audioContextRef.current && audioContextRef.current.state !== "closed") {
-      await audioContextRef.current.close()
-      audioContextRef.current = null
-      basicNodesRef.current = null
-      advancedNodesRef.current = null
+      try {
+        // First disconnect any existing nodes to avoid conflicts
+        if (basicNodesRef.current && basicNodesRef.current.outputGain) {
+          basicNodesRef.current.outputGain.disconnect();
+        }
+        
+        // Then close the context
+        await audioContextRef.current.close();
+      } catch (err) {
+        console.warn("Error closing previous audio context:", err);
+      } finally {
+        audioContextRef.current = null;
+        basicNodesRef.current = null;
+        advancedNodesRef.current = null;
+        sourceNodeCreatedRef.current = false; // Reset the source node flag
+      }
     }
 
-    if (!audioRef.current) return
+    if (!audioRef.current) return;
 
     try {
       // Create new audio context
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
 
       // Set up basic audio processing graph
-      basicNodesRef.current = await setupAudioGraph(audioContextRef.current, audioRef.current, basicEffects)
+      // Use type assertion to work around type incompatibility
+      basicNodesRef.current = await setupAudioGraph(
+        audioContextRef.current as any,
+        audioRef.current,
+        basicEffects
+      );
 
       // Set up advanced audio processing graph if any effects are enabled
-      const anyAdvancedEffectEnabled = Object.entries(advancedEffects).some(([_, effect]) => (effect as any).enabled)
+      const anyAdvancedEffectEnabled = Object.entries(advancedEffects).some(([_, effect]) => (effect as any).enabled);
 
       if (anyAdvancedEffectEnabled && basicNodesRef.current) {
         // Connect advanced effects after basic effects
+        // Use type assertion to work around type incompatibility
         advancedNodesRef.current = await setupAdvancedAudioGraph(
-          audioContextRef.current,
-          basicNodesRef.current.sourceNode,
-          audioContextRef.current.destination,
+          audioContextRef.current as any,
+          basicNodesRef.current.sourceNode as any,
+          audioContextRef.current.destination as any,
           advancedEffects,
-        )
+        );
       }
 
       // Mark as initialized
-      setAudioContextInitialized(true)
-      effectsAppliedRef.current = true
+      setAudioContextInitialized(true);
+      effectsAppliedRef.current = true;
+      sourceNodeCreatedRef.current = true; // Mark that we've created a source node
 
-      console.log("Audio context initialized with effects")
+      console.log("Audio context initialized with effects");
     } catch (error) {
-      console.error("Failed to initialize audio context:", error)
-      setAudioContextInitialized(false)
+      console.error("Failed to initialize audio context:", error);
+      setAudioContextInitialized(false);
     }
   }
 
@@ -146,7 +166,7 @@ export default function AudioPlayer({ audio }: AudioPlayerProps) {
 
       // Clean up audio context and nodes
       if (audioContextRef.current && audioContextRef.current.state !== "closed") {
-        audioContextRef.current.close().catch((err) => console.error("Error closing audio context:", err))
+        audioContextRef.current.close().catch((err: Error) => console.error("Error closing audio context:", err))
         audioContextRef.current = null
         basicNodesRef.current = null
         advancedNodesRef.current = null
@@ -155,6 +175,7 @@ export default function AudioPlayer({ audio }: AudioPlayerProps) {
       setIsPlaying(false)
       setCurrentTime(0)
       effectsAppliedRef.current = false
+      sourceNodeCreatedRef.current = false // Reset the source node flag
     }
   }, [audio])
 
@@ -184,6 +205,8 @@ export default function AudioPlayer({ audio }: AudioPlayerProps) {
       } else {
         // Initialize audio context if not already done
         if (!audioContextInitialized) {
+          // Reset source node flag before initializing
+          sourceNodeCreatedRef.current = false
           await initAudioContext()
         }
 
@@ -245,6 +268,8 @@ export default function AudioPlayer({ audio }: AudioPlayerProps) {
         const currentTime = audioRef.current.currentTime
         audioRef.current.pause()
 
+        // Reset source node flag before reinitializing
+        sourceNodeCreatedRef.current = false
         await initAudioContext()
 
         // Restore position and play
@@ -274,6 +299,8 @@ export default function AudioPlayer({ audio }: AudioPlayerProps) {
           audioRef.current.pause()
         }
 
+        // Reset source node flag before reinitializing
+        sourceNodeCreatedRef.current = false
         await initAudioContext()
 
         // Restore position and play state

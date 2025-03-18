@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, use } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -13,12 +13,15 @@ export default function AudioDetailPage({ params }: { params: { id: string } }) 
   const [audio, setAudio] = useState<{ id: number; name: string; blob: Blob } | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  
+  // Safely extract the ID once to avoid repeated access to params.id
+  const audioId = params.id
 
   useEffect(() => {
     const fetchAudio = async () => {
       try {
         setLoading(true)
-        const id = Number.parseInt(params.id)
+        const id = Number.parseInt(audioId)
         if (isNaN(id)) {
           setError("Invalid audio ID")
           return
@@ -40,7 +43,7 @@ export default function AudioDetailPage({ params }: { params: { id: string } }) 
     }
 
     fetchAudio()
-  }, [params.id])
+  }, [audioId])
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-md min-h-screen bg-gradient-to-b from-yellow-50 to-blue-50">

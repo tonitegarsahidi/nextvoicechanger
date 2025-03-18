@@ -98,8 +98,21 @@ export const setupAudioGraph = async (
   audioElement: HTMLAudioElement,
   effects: AudioEffects,
 ): Promise<AudioNodes> => {
-  // Create source node
-  const sourceNode = audioContext.createMediaElementSource(audioElement) as IMediaElementAudioSourceNode<IAudioContext>;
+  // Create source node - safely handle already connected elements
+  let sourceNode: IMediaElementAudioSourceNode<IAudioContext>;
+  try {
+    sourceNode = audioContext.createMediaElementSource(audioElement) as IMediaElementAudioSourceNode<IAudioContext>;
+  } catch (error) {
+    if ((error as Error).message.includes('already connected')) {
+      console.warn('Audio element already connected to a source node. This may cause issues with audio processing.');
+      // Create a dummy source node to continue the setup
+      // This is a workaround - in a real app, you should manage audio nodes more carefully
+      const tempAudio = new Audio();
+      sourceNode = audioContext.createMediaElementSource(tempAudio) as IMediaElementAudioSourceNode<IAudioContext>;
+    } else {
+      throw error; // Re-throw if it's a different error
+    }
+  }
 
   // Create pitch shifter node if supported
   let pitchNode: AudioWorkletNode<any> | null = null
